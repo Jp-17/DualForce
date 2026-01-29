@@ -11,7 +11,7 @@
 <div align="center">
     <a href="https://discord.gg/J2BBgVMRVZ"><img src="https://img.shields.io/badge/Discord-Join-blueviolet?logo=discord&amp"></a>
     <a href="https://x.com/Open_MOSS"><img src="https://img.shields.io/badge/X-Follow-blue?logo=x&amp"></a>
-    <a href="https://github.com/user-attachments/assets/ee7e8b70-1440-4012-b2e2-6cb2af42c899"><img src="https://img.shields.io/badge/Wechat-Join-green?logo=wechat&amp"></a>
+    <a href="https://gist.github.com/user-attachments/assets/abf31f41-55d3-4e4e-9f25-966bf6d23fc1"><img src="https://img.shields.io/badge/Wechat-Join-green?logo=wechat&amp"></a>
 </div>
 
 ## MOVA: Towards Scalable and Synchronized Video–Audio Generation
