@@ -234,3 +234,6 @@ All peak usage numbers below are measured on **360p, 8-second** video training s
 ## Acknowledgement
 We would like to thank the contributors to [Wan](https://github.com/Wan-Video/Wan2.2), [SGLang](https://github.com/sgl-project/sglang), [diffusers](https://huggingface.co/docs/diffusers/en/index), [HuggingFace](https://huggingface.co/), [DiffSynth-Studio](https://github.com/modelscope/DiffSynth-Studio), and [HunyuanVideo-Foley](https://github.com/Tencent-Hunyuan/HunyuanVideo-Foley) for their great open-source work, which is helpful to this project.
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=OpenMOSS/MOVA&type=date&legend=top-left)](https://www.star-history.com/#OpenMOSS/MOVA&type=date&legend=top-left)
