@@ -10,7 +10,7 @@
 </div>
 <div align="center">
     <a href="https://github.com/OpenMOSS/MOVA"><img src="https://img.shields.io/badge/Discord-Join-blueviolet?logo=discord&amp"></a>
-    <a href="https://github.com/OpenMOSS/MOVA"><img src="https://img.shields.io/badge/X-Follow-blue?logo=x&amp"></a>
+    <a href="https://x.com/Open_MOSS"><img src="https://img.shields.io/badge/X-Follow-blue?logo=x&amp"></a>
     <a href="https://github.com/OpenMOSS/MOVA"><img src="https://img.shields.io/badge/Wechat-Join-green?logo=wechat&amp"></a>
 </div>
 
