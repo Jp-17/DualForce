@@ -28,7 +28,7 @@ We introduce **MOVA** (**MO**SS **V**ideo and **A**udio), a foundation model des
 
 ## 🎬Demo
 <div align="center">
-  <video src="https://github.com/user-attachments/assets/68ea90fd-2efc-4819-ba4e-905f8c876894" width="70%" poster=""> </video>
+  <video src="https://github.com/user-attachments/assets/6e780404-e659-4382-9c19-c840256eea89" width="70%" poster=""> </video>
 </div>
 
 Single person speech:
