@@ -1386,10 +1386,13 @@ class MOVATrain(BasePipeline, DiffusionPipeline):
             mode_scale=1.0,
             independent_timesteps=False,
         )
+        # Look up the index boundary directly from the scheduler's timestep table.
+        # boundary_ratio=0.9 means timestep 900; count how many timesteps >= 900 to get the index fraction.
+        boundary = (self.scheduler.timesteps >= self.boundary_ratio * self.scheduler.num_train_timesteps).sum().item() / self.scheduler.num_train_timesteps
         if global_step % 2 == 0:
-            timestep_config.max_timestep_boundary = self.boundary_ratio
+            timestep_config.max_timestep_boundary = boundary
         else:
-            timestep_config.min_timestep_boundary = self.boundary_ratio
+            timestep_config.min_timestep_boundary = boundary
 
         timestep, audio_timestep = self.sample_timestep_pair(timestep_config)
         timestep = timestep.to(device=device)
