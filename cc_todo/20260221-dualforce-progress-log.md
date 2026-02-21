@@ -2,7 +2,7 @@
 
 > Project: DualForce - 3D-Aware Autoregressive Diffusion for Talking Head Generation
 > Started: 2026-02-21
-> Last Updated: 2026-02-21 (Session 3)
+> Last Updated: 2026-02-21 (Session 4)
 
 ---
 
@@ -98,7 +98,7 @@
 
 ---
 
-## Current Phase: Phase 1 - Architecture Implementation (~90% complete)
+## Current Phase: Phase 1 - Architecture Implementation (COMPLETE, pending GPU verification)
 
 ### Phase 0 Progress
 | Task | Status | Notes |
@@ -121,18 +121,101 @@
 | DualForceDataset | **Done** | mova/datasets/dualforce_dataset.py |
 | Causal temporal attention | **Done** | Block-causal mask in SelfAttention |
 | KV-Cache | **Done** | MultiModalKVCache + CachedSelfAttention |
-| DualForce training script | Pending | Adapt accelerate_train.py |
-| DualForce AR inference pipeline | Pending | Sliding window generation |
-| Forward pass verification | Pending | Needs GPU |
+| DualForceTrain_from_pretrained | **Done** | Factory function for model building |
+| DualForceTrain.forward | **Done** | Bridges trainer call convention |
+| DualForce training script | **Done** | scripts/training_scripts/dualforce_train.py |
+| AccelerateTrainer generalization | **Done** | Batch-key agnostic, DualForce metrics |
+| DualForceInference pipeline | **Done** | Sliding window AR generation |
+| Inference script | **Done** | scripts/dualforce_inference.py |
+| Forward pass verification | **Pending** | Needs GPU |
 
 ---
 
-## Next Immediate Tasks
+## 2026-02-21 - Session 4: Training/Inference Scripts, Factory, Trainer Update
 
-1. Create DualForce training launch script (adapt accelerate_train.py)
-2. Create DualForce AR inference pipeline (sliding window + KV-cache)
-3. Forward pass test on GPU (when available)
-4. Start HDTF data download
+### Completed
+
+#### DualForceTrain_from_pretrained (Factory Function)
+- [x] Registered factory in `DIFFUSION_PIPELINES` registry
+- [x] Two modes: build from scratch (config dicts) or load from checkpoint
+- [x] Accepts `video_dit_config`, `struct_dit_config`, `bridge_config` for from-scratch builds
+- [x] Requires `vae_path` and `text_encoder_path` for frozen components
+
+#### DualForceTrain.forward()
+- [x] Added `forward()` method that dispatches batch kwargs to `training_step()`
+- [x] Handles both DualForce dataset keys (`video_latents`, `struct_latents`) and MOVA keys (`video`, `audio`)
+
+#### AccelerateTrainer Generalization
+- [x] Training loop now passes full batch dict as `**kwargs` instead of hardcoded `video=`, `audio=`
+- [x] Logs DualForce-specific metrics: `struct_loss`, `flame_loss`, `lip_sync_loss`, `sigma_v_mean`, `sigma_s_mean`
+- [x] Backward-compatible with MOVA (uses `.get()` with fallbacks for `audio_loss`)
+
+#### Training Config Update
+- [x] `dualforce_train_8gpu.py` now passes component configs through `diffusion_pipeline` dict
+- [x] Includes frozen model paths (vae_path, text_encoder_path) pointing to MOVA-360p checkpoints
+
+#### DualForceInference Pipeline
+- [x] `pipeline_dualforce.py`: Sliding window autoregressive denoising
+  - Configurable `window_size` and `window_stride`
+  - Per-frame sigma schedule from `sigma_max` → 0
+  - First frame conditioning via VAE encoding
+  - Optional struct/audio conditioning inputs
+  - CFG guidance support
+  - VAE decoding to video output
+- [x] Registered `DualForceInference_from_pretrained` in `DIFFUSION_PIPELINES`
+
+#### Inference Script
+- [x] `scripts/dualforce_inference.py`: CLI tool for video generation
+  - Takes reference image, prompt, optional struct/audio features
+  - Saves output as MP4
+
+**Git commit:** `222b2ed` - "Add training/inference scripts, factory function, and trainer generalization"
+
+---
+
+## Next Immediate Tasks (requires GPU)
+
+1. **Forward pass verification** - Run DualForceTrain with random data, verify output shapes and loss computation
+2. **MOVA inference test** - Verify base MOVA-360p weights produce valid output
+3. **HDTF data download** - Start downloading from YouTube (time-sensitive, links may expire)
+4. **Run preprocessing on test clips** - Validate full pipeline end-to-end on 5-10 clips
+5. **Begin Phase 2** - Causal video pretraining once data is ready
+
+## Git Commit History
+
+| Commit | Description |
+|--------|-------------|
+| `222b2ed` | Add training/inference scripts, factory function, trainer generalization |
+| `7567c46` | Add dataset, preprocessing pipeline, causal attention, KV-cache |
+| `f505ce6` | Add DualForce core architecture: struct DiT, DF scheduler, training pipeline |
+| `a14eb9a` | Add project analysis and execution plan docs |
+
+## Code File Summary
+
+### New Files Created
+| File | Purpose |
+|------|---------|
+| `configs/dualforce/dualforce_train_8gpu.py` | Training config |
+| `mova/diffusion/models/wan_struct_dit.py` | 3D Structure DiT |
+| `mova/diffusion/models/kv_cache.py` | KV-cache for AR inference |
+| `mova/diffusion/schedulers/diffusion_forcing.py` | Per-frame noise scheduler |
+| `mova/diffusion/pipelines/dualforce_train.py` | Training pipeline |
+| `mova/diffusion/pipelines/pipeline_dualforce.py` | Inference pipeline |
+| `mova/datasets/dualforce_dataset.py` | Multi-modal dataset |
+| `scripts/training_scripts/dualforce_train.py` | Training launch script |
+| `scripts/dualforce_inference.py` | Inference CLI script |
+| `scripts/preprocess/01-07_*.py` | Preprocessing pipeline (7 scripts) |
+| `scripts/preprocess/run_pipeline.sh` | Pipeline runner |
+
+### Modified Files
+| File | Change |
+|------|--------|
+| `mova/diffusion/models/wan_video_dit.py` | Block-causal mask, `causal_temporal` config |
+| `mova/diffusion/models/__init__.py` | Register WanStructModel, KV-cache |
+| `mova/diffusion/schedulers/__init__.py` | Register DiffusionForcingScheduler |
+| `mova/diffusion/pipelines/__init__.py` | Register DualForceTrain, DualForceInference |
+| `mova/datasets/__init__.py` | Register DualForceDataset |
+| `mova/engine/trainer/accelerate/accelerate_trainer.py` | Batch-key agnostic training loop |
 
 ---
 
