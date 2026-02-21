@@ -83,6 +83,12 @@ diffusion_pipeline = dict(
         flame_weight=0.1,
         lip_sync_weight=0.3,
     ),
+    # Audio conditioning (HuBERT -> shallow cross-attention)
+    audio_conditioning_config=dict(
+        audio_dim=1024,     # HuBERT-Large output dim
+        num_heads=12,       # Match DiT head count
+        num_layers=6,       # Apply audio conditioning in first 6 layers only
+    ),
     # Frozen model paths (required for from-scratch training)
     vae_path="/root/autodl-tmp/checkpoints/MOVA-360p/video_vae",
     text_encoder_path="/root/autodl-tmp/checkpoints/MOVA-360p/text_encoder",
@@ -193,7 +199,10 @@ trainer = dict(
     resume_from=None,
 
     # Modules to train (no video_dit_2!)
-    train_modules=["video_dit", "struct_dit", "dual_tower_bridge"],
+    train_modules=[
+        "video_dit", "struct_dit", "dual_tower_bridge",
+        "audio_conditioning", "video_adaln", "struct_adaln",
+    ],
 
     # Full fine-tuning (no LoRA)
     use_lora=False,
@@ -216,6 +225,15 @@ trainer = dict(
 #
 # Bridge (20 interaction layers):
 #   ~200M (cross-attention for both directions)
+#
+# Audio Conditioning (6 layers, gated cross-attn):
+#   AudioProjector: ~3M (video) + ~3M (struct)
+#   AudioCondCrossAttention: ~14M (video, 6 layers) + ~14M (struct, 6 layers)
+#   Total: ~34M
+#
+# DualAdaLNZero (per-frame sigma modulation):
+#   Video: ~4.7M, Struct: ~4.7M
+#   Total: ~9.4M
 #
 # Frozen modules: Video VAE (~200M), Text Encoder (~3B), HuBERT (~300M)
 # Total trainable: ~1.5B

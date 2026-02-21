@@ -29,6 +29,7 @@ from transformers.models import UMT5EncoderModel, T5TokenizerFast
 
 from mova.diffusion.models import WanModel, WanStructModel, sinusoidal_embedding_1d
 from mova.diffusion.models.interactionv2 import DualTowerConditionalBridge
+from mova.diffusion.models.audio_conditioning import AudioConditioningModule, DualAdaLNZero
 from mova.diffusion.schedulers.diffusion_forcing import DiffusionForcingScheduler
 
 from mova.distributed.functional import (
@@ -98,6 +99,9 @@ class DualForceTrain(DiffusionPipeline):
         struct_dit: WanStructModel,
         dual_tower_bridge: DualTowerConditionalBridge,
         # DualForce specific
+        audio_conditioning: Optional[AudioConditioningModule] = None,
+        video_adaln: Optional[DualAdaLNZero] = None,
+        struct_adaln: Optional[DualAdaLNZero] = None,
         loss_config: Optional[Dict] = None,
         # Gradient checkpointing
         use_gradient_checkpointing: bool = False,
@@ -114,6 +118,12 @@ class DualForceTrain(DiffusionPipeline):
             struct_dit=struct_dit,
             dual_tower_bridge=dual_tower_bridge,
         )
+
+        # DualForce-specific modules (not registered as DiffusionPipeline modules
+        # since they don't follow the from_pretrained convention)
+        self.audio_conditioning = audio_conditioning
+        self.video_adaln = video_adaln
+        self.struct_adaln = struct_adaln
 
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
@@ -231,12 +241,13 @@ class DualForceTrain(DiffusionPipeline):
         struct_x: torch.Tensor,         # [B, L_s, dim_s] struct tokens
         visual_context: torch.Tensor,   # [B, seq_len, dim_v] text embedding for video
         struct_context: torch.Tensor,   # [B, seq_len, dim_s] text embedding for struct
-        visual_t_mod: torch.Tensor,     # [B, 6, dim_v] timestep modulation for video
-        struct_t_mod: torch.Tensor,     # [B, 6, dim_s] timestep modulation for struct
+        visual_t_mod: torch.Tensor,     # [B, 6, dim_v] or [B, L_v, 6, dim_v] timestep modulation
+        struct_t_mod: torch.Tensor,     # [B, 6, dim_s] or [B, L_s, 6, dim_s] timestep modulation
         visual_freqs: torch.Tensor,     # [L_v, 1, head_dim] video RoPE
         struct_freqs: torch.Tensor,     # [L_s, 1, head_dim] struct RoPE
         grid_size: Tuple[int, int, int],  # (T, H, W) video grid
         video_fps: float,
+        audio_features: Optional[torch.Tensor] = None,  # [B, T_audio, 1024] HuBERT
         cp_mesh: Optional[DeviceMesh] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -367,7 +378,10 @@ class DualForceTrain(DiffusionPipeline):
             else:
                 struct_x = struct_block(struct_x, struct_context, struct_t_mod, struct_freqs, causal_grid_size=struct_causal_grid)
 
-        # Process remaining video layers (if video has more layers than struct)
+            # Audio conditioning: HuBERT -> video and struct (shallow layers only)
+            if audio_features is not None and self.audio_conditioning is not None:
+                visual_x = self.audio_conditioning.condition_video(layer_idx, visual_x, audio_features)
+                struct_x = self.audio_conditioning.condition_struct(layer_idx, struct_x, audio_features)
         for layer_idx in range(min_layers, len(self.video_dit.blocks)):
             visual_block = self.video_dit.blocks[layer_idx]
             if self.use_gradient_checkpointing and self.training:
@@ -494,9 +508,7 @@ class DualForceTrain(DiffusionPipeline):
         # --------------------------------------------------
         # 4. Compute timestep embeddings from per-frame sigma
         # --------------------------------------------------
-        # For AdaLN, we need a single timestep per sample.
-        # Use mean sigma across frames as the conditioning signal.
-        # TODO: Implement per-frame AdaLN (DualAdaLNZero) for finer control
+        # Use mean sigma for the global t embedding (for head modulation)
         video_timestep = self.scheduler.sigma_to_timestep(sigma_v.mean(dim=1))  # [B]
         struct_timestep = self.scheduler.sigma_to_timestep(sigma_s.mean(dim=1))  # [B]
 
@@ -548,6 +560,12 @@ class DualForceTrain(DiffusionPipeline):
             self.struct_dit.freqs[2][:f].view(f, -1).expand(f, -1),
         ], dim=-1).reshape(f, 1, -1).to(struct_x.device)
 
+        # Per-frame AdaLN (DualAdaLNZero) — override global t_mod if available
+        if self.video_adaln is not None:
+            visual_t_mod = self.video_adaln(sigma_v, grid_size).to(model_dtype)
+        if self.struct_adaln is not None:
+            struct_t_mod = self.struct_adaln(sigma_s, (f,)).to(model_dtype)
+
         # --------------------------------------------------
         # 6. Forward through dual tower
         # --------------------------------------------------
@@ -562,6 +580,7 @@ class DualForceTrain(DiffusionPipeline):
             struct_freqs=struct_freqs,
             grid_size=grid_size,
             video_fps=video_fps,
+            audio_features=audio_features,
             cp_mesh=cp_mesh,
         )
 
@@ -636,7 +655,10 @@ class DualForceTrain(DiffusionPipeline):
     def freeze_for_training(self, train_modules: List[str] = None):
         """Freeze all modules except those in train_modules."""
         if train_modules is None:
-            train_modules = ["video_dit", "struct_dit", "dual_tower_bridge"]
+            train_modules = [
+                "video_dit", "struct_dit", "dual_tower_bridge",
+                "audio_conditioning", "video_adaln", "struct_adaln",
+            ]
 
         # Freeze everything first
         for param in self.parameters():
@@ -670,6 +692,7 @@ def DualForceTrain_from_pretrained(
     bridge_config: Optional[Dict] = None,
     scheduler_config: Optional[Dict] = None,
     loss_config: Optional[Dict] = None,
+    audio_conditioning_config: Optional[Dict] = None,
     # Frozen model paths
     vae_path: Optional[str] = None,
     text_encoder_path: Optional[str] = None,
@@ -739,6 +762,29 @@ def DualForceTrain_from_pretrained(
         else:
             raise ValueError("text_encoder_path is required when building from scratch")
 
+        # Build audio conditioning module (optional)
+        audio_cond = None
+        video_adaln = None
+        struct_adaln = None
+        if audio_conditioning_config is not None:
+            ac_cfg = audio_conditioning_config
+            video_dim = video_dit_cfg.get('dim', 1536)
+            struct_dim = struct_dit_cfg.get('dim', 1536)
+            audio_cond = AudioConditioningModule(
+                audio_dim=ac_cfg.get('audio_dim', 1024),
+                video_dim=video_dim,
+                struct_dim=struct_dim,
+                num_heads=ac_cfg.get('num_heads', 12),
+                num_layers=ac_cfg.get('num_layers', 6),
+            ).to(torch_dtype)
+            print(f"[DualForce] Audio Conditioning: {sum(p.numel() for p in audio_cond.parameters())/1e6:.1f}M params")
+
+            # Build DualAdaLNZero for per-frame modulation
+            freq_dim = video_dit_cfg.get('freq_dim', 256)
+            video_adaln = DualAdaLNZero(dim=video_dim, freq_dim=freq_dim).to(torch_dtype)
+            struct_adaln = DualAdaLNZero(dim=struct_dim, freq_dim=freq_dim).to(torch_dtype)
+            print(f"[DualForce] DualAdaLNZero: {sum(p.numel() for p in video_adaln.parameters())/1e6:.1f}M + {sum(p.numel() for p in struct_adaln.parameters())/1e6:.1f}M params")
+
         model = DualForceTrain(
             video_vae=video_vae,
             text_encoder=text_encoder,
@@ -747,6 +793,9 @@ def DualForceTrain_from_pretrained(
             video_dit=video_dit,
             struct_dit=struct_dit,
             dual_tower_bridge=dual_tower_bridge,
+            audio_conditioning=audio_cond,
+            video_adaln=video_adaln,
+            struct_adaln=struct_adaln,
             loss_config=loss_config,
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
