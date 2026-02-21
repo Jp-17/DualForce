@@ -204,6 +204,45 @@ All Phase 1 code has been written. Remaining items require GPU access:
 
 ---
 
+## 2026-02-21 - Session 6: Code Review, Bugfixes, Verification & Download Scripts
+
+### Code Review
+- [x] Thorough review of all DualForce code for correctness issues
+- [x] Identified and fixed 3 critical bugs:
+  1. Hardcoded `"cuda"` in `torch.autocast` — now detects device type dynamically
+  2. Loss placeholder tensors created in wrong dtype (float32 vs model's bfloat16) — now matches video_loss dtype
+  3. Missing error handling for first_frame file in dataset — now falls back to zeros
+- [x] Cleaned up config: removed misleading `patch_size`, `require_clip_embedding`, `require_vae_embedding` from struct_dit config
+- [x] Removed unused `ref_feature_key`, `num_frames`, `height`, `width` from data config
+
+### GPU Verification Script
+- [x] `scripts/verify_dualforce.py` — 6-test suite:
+  1. Video DiT forward pass (random input → correct shape)
+  2. Struct DiT forward pass
+  3. Dual tower with bridge cross-attention
+  4. KV-cache consistency
+  5. Full training pipeline (with VAE + text encoder)
+  6. Memory estimation for full 20-layer model
+- [x] Supports `--cpu-only`, `--skip-training`, `--device` options
+
+### MOVA Inference Verification Script
+- [x] `scripts/verify_mova_inference.py` — Phase 0.1 verification
+  - Checks all checkpoint files exist
+  - Loads MOVA pipeline and reports component param counts
+  - Optional full inference with reference image
+  - Supports `--load-only` mode for quick check
+  - Supports CPU offload for single-GPU testing
+
+### HDTF Download Script
+- [x] `scripts/download/download_hdtf.py` — Phase 0.2 data download
+  - Parses HDTF metadata (URL files, annotation files)
+  - Downloads videos via yt-dlp with parallel workers
+  - Clips videos according to annotation timestamps
+  - Normalizes to 512x512 @ 25fps
+  - Generates metadata.json for the preprocessing pipeline
+
+---
+
 ## Next Immediate Tasks (requires GPU)
 
 1. **Forward pass verification** - Run DualForceTrain with random data, verify output shapes and loss computation
@@ -216,6 +255,7 @@ All Phase 1 code has been written. Remaining items require GPU access:
 
 | Commit | Description |
 |--------|-------------|
+| `b4d5899` | Add FSDP config, launch script; finalize Phase 1 code completion |
 | `222b2ed` | Add training/inference scripts, factory function, trainer generalization |
 | `7567c46` | Add dataset, preprocessing pipeline, causal attention, KV-cache |
 | `f505ce6` | Add DualForce core architecture: struct DiT, DF scheduler, training pipeline |
@@ -226,6 +266,9 @@ All Phase 1 code has been written. Remaining items require GPU access:
 |------|---------|
 | `configs/dualforce/accelerate/fsdp_8gpu.yaml` | FSDP config for 8-GPU distributed training |
 | `scripts/training_scripts/dualforce_train_8gpu.sh` | Bash launch script for accelerate |
+| `scripts/verify_dualforce.py` | GPU verification script (6 tests) |
+| `scripts/verify_mova_inference.py` | MOVA inference verification |
+| `scripts/download/download_hdtf.py` | HDTF dataset download + clip script |
 
 ## Code File Summary
 

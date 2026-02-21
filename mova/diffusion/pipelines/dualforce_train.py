@@ -430,6 +430,7 @@ class DualForceTrain(DiffusionPipeline):
         """
         B = video_latents.shape[0]
         device = video_latents.device
+        device_type = device.type if isinstance(device, torch.device) else str(device).split(":")[0]
         dtype = torch.bfloat16
 
         video_latents = video_latents.to(dtype=dtype, device=device)
@@ -466,7 +467,7 @@ class DualForceTrain(DiffusionPipeline):
                             device=device, dtype=dtype)
             ], dim=2)
 
-            with torch.autocast("cuda", dtype=dtype):
+            with torch.autocast(device_type, dtype=dtype):
                 y = self.video_vae.encode(vae_input).latent_dist.mode()
                 y = self.normalize_video_latents(y)
 
@@ -500,7 +501,7 @@ class DualForceTrain(DiffusionPipeline):
         struct_timestep = self.scheduler.sigma_to_timestep(sigma_s.mean(dim=1))  # [B]
 
         model_dtype = torch.bfloat16
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast(device_type, dtype=torch.float32):
             visual_t = self.video_dit.time_embedding(
                 sinusoidal_embedding_1d(self.video_dit.freq_dim, video_timestep))
             visual_t_mod = self.video_dit.time_projection(visual_t).unflatten(1, (6, self.video_dit.dim))
@@ -587,13 +588,13 @@ class DualForceTrain(DiffusionPipeline):
         struct_loss = F.mse_loss(struct_pred.to(struct_target.dtype), struct_target)
 
         # L_flame: FLAME alignment loss (optional)
-        flame_loss = torch.tensor(0.0, device=device)
+        flame_loss = torch.tensor(0.0, device=device, dtype=video_loss.dtype)
         if flame_params is not None and self.loss_config.flame_weight > 0:
             # TODO: Implement FLAME alignment once struct decoder is built
             pass
 
         # L_lip_sync: Contrastive lip-sync loss (optional)
-        lip_sync_loss = torch.tensor(0.0, device=device)
+        lip_sync_loss = torch.tensor(0.0, device=device, dtype=video_loss.dtype)
         if audio_features is not None and self.loss_config.lip_sync_weight > 0:
             # TODO: Implement lip-sync contrastive loss
             pass

@@ -45,12 +45,9 @@ struct_dit = dict(
     text_dim=4096,      # UMT5 text embedding dim
     freq_dim=256,
     eps=1e-6,
-    patch_size=(1,),    # 1D temporal tokens, no downsampling
     num_heads=12,       # head_dim = 128
     num_layers=20,      # Same depth as video DiT
     has_image_input=False,
-    require_vae_embedding=False,    # No VAE embedding for struct
-    require_clip_embedding=True,     # Keep CLIP conditioning
     causal_temporal=True,
 )
 
@@ -99,17 +96,13 @@ data = dict(
         type="DualForceDataset",
         data_root="/path/to/preprocessed_data",
         metadata_file="metadata.json",
-        num_frames=32,          # Shorter clips for training
-        height=352,
-        width=640,
         video_fps=25.0,         # 25fps for talking head
         clip_length=32,         # Frames per training clip
-        # Feature cache paths (pre-extracted)
+        # Feature tensor keys (within .safetensors files)
         video_latent_key="video_latents",
         struct_latent_key="struct_latents",
         audio_feature_key="audio_features",
         flame_param_key="flame_params",
-        ref_feature_key="ref_features",
     ),
     transform=None,
     batch_size=2,       # Per GPU

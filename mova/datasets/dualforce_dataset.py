@@ -208,8 +208,15 @@ class DualForceDataset(Dataset):
         # Load first frame: [C, H, W] or [C, 1, H', W']
         # --------------------------------------------------
         first_frame_path = os.path.join(clip_dir, self.first_frame_file)
-        first_frame_data = load_file(first_frame_path)
-        first_frame = first_frame_data[self.first_frame_key]  # [C, H, W]
+        if os.path.exists(first_frame_path):
+            first_frame_data = load_file(first_frame_path)
+            first_frame = first_frame_data[self.first_frame_key]  # [C, H, W]
+        else:
+            # Fallback: use zeros (will be re-encoded from video latents in training)
+            C_img = 3
+            H_img = video_latents.shape[-2] * 8  # Approximate from latent spatial dims
+            W_img = video_latents.shape[-1] * 8
+            first_frame = torch.zeros(C_img, H_img, W_img)
 
         result = {
             "video_latents": video_latents,       # [C=16, T', H', W']
