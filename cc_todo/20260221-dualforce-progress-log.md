@@ -2,7 +2,7 @@
 
 > Project: DualForce - 3D-Aware Autoregressive Diffusion for Talking Head Generation
 > Started: 2026-02-21
-> Last Updated: 2026-02-21 (Session 4)
+> Last Updated: 2026-02-21 (Session 5)
 
 ---
 
@@ -13,6 +13,7 @@
 | 2026-02-21 | v0.1 | Initial analysis complete. MOVA codebase analyzed, execution plan created. |
 | 2026-02-21 | v0.2 | CRITICAL correction: actual MOVA-360p is dim=5120/40L (not 3072/30L). Created core DualForce code. |
 | 2026-02-21 | v0.3 | Dataset class, preprocessing pipeline, causal attention, KV-cache all implemented. Phase 1 architecture ~90% complete. |
+| 2026-02-21 | v0.4 | Training/inference scripts, factory function, trainer generalization, FSDP config. Phase 1 CODE COMPLETE. |
 
 ---
 
@@ -173,6 +174,36 @@
 
 ---
 
+## 2026-02-21 - Session 5: FSDP Config, Launch Script, Plan Update
+
+### Completed
+
+#### Accelerate FSDP Configuration
+- [x] `configs/dualforce/accelerate/fsdp_8gpu.yaml` - Full FSDP config for 8-GPU training
+  - FSDP wrapping: DiTBlock + ConditionalCrossAttentionBlock
+  - Context Parallel size=2, DP shard size=4
+  - bf16 mixed precision, CPU parameter offload
+  - Gradient checkpointing enabled
+
+#### Training Launch Script
+- [x] `scripts/training_scripts/dualforce_train_8gpu.sh` - Bash launcher
+  - Sets PYTHONPATH, CUDA_VISIBLE_DEVICES, TOKENIZERS_PARALLELISM
+  - Uses `accelerate launch` with FSDP config
+  - Supports `--cfg-options` for config overrides
+
+#### Execution Plan Update
+- [x] Updated `cc_todo/20260221-dualforce-execution-plan.md`
+  - Marked Phase 0.3 preprocessing scripts as complete
+  - Marked all Phase 1 code items as complete
+  - Added new items for DualForce training script, inference pipeline, dataset, factory function
+
+### Phase 1 Status: CODE COMPLETE
+All Phase 1 code has been written. Remaining items require GPU access:
+- Forward pass verification (random input → correct output shape)
+- KV-cache consistency verification (cached vs non-cached output match)
+
+---
+
 ## Next Immediate Tasks (requires GPU)
 
 1. **Forward pass verification** - Run DualForceTrain with random data, verify output shapes and loss computation
@@ -189,6 +220,12 @@
 | `7567c46` | Add dataset, preprocessing pipeline, causal attention, KV-cache |
 | `f505ce6` | Add DualForce core architecture: struct DiT, DF scheduler, training pipeline |
 | `a14eb9a` | Add project analysis and execution plan docs |
+
+### New Files Created (Session 5)
+| File | Purpose |
+|------|---------|
+| `configs/dualforce/accelerate/fsdp_8gpu.yaml` | FSDP config for 8-GPU distributed training |
+| `scripts/training_scripts/dualforce_train_8gpu.sh` | Bash launch script for accelerate |
 
 ## Code File Summary
 

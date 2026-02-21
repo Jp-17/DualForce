@@ -100,25 +100,30 @@ For DualForce we keep in_dim=36 for the video backbone.
 - [ ] VFHQ-512 (~50h, 15K clips) - Priority 3
 
 **0.3 Data Preprocessing**
-- [ ] Build preprocessing scripts (face detect, crop, filter, FPS normalize)
-- [ ] Extract video_latents (MOVA Video VAE)
-- [ ] Extract struct_latents (LivePortrait)
-- [ ] Extract flame_params (EMOCA)
-- [ ] Extract audio_features (HuBERT-Large)
+- [x] Build preprocessing scripts (face detect, crop, filter, FPS normalize) — `scripts/preprocess/01-07`
+- [ ] Extract video_latents (MOVA Video VAE) — script ready: `03_extract_video_latents.py`
+- [ ] Extract struct_latents (LivePortrait) — script ready: `04_extract_struct_latents.py`
+- [ ] Extract flame_params (EMOCA) — script ready: `05_extract_flame_params.py`
+- [ ] Extract audio_features (HuBERT-Large) — script ready: `06_extract_audio_features.py`
 - [ ] Extract ref_features (DINOv2/CLIP)
-- [ ] Store as per-clip .safetensors
+- [x] Store as per-clip .safetensors — format defined in `DualForceDataset`
 
 **Milestone:** 10 clips spot-checked, all 5 feature types correct
 
-### Phase 1: MOVA-Lite Backbone (Week 2-3)
+### Phase 1: MOVA-Lite Backbone (Week 2-3) — ✅ CODE COMPLETE
 
-- [ ] Create DualForce model config (dim=1536, layers=20, heads=12)
-- [ ] Remove video_dit_2 from pipeline
-- [ ] Verify forward pass (random input → correct output shape)
-- [ ] Convert training from LoRA to full FT
-- [ ] Implement causal temporal attention mask
-- [ ] Implement MultiModalKVCache
-- [ ] Verify KV-cache matches non-cached output
+- [x] Create DualForce model config (dim=1536, layers=20, heads=12) — `dualforce_train_8gpu.py`
+- [x] Remove video_dit_2 from pipeline — `DualForceTrain` has no video_dit_2
+- [ ] Verify forward pass (random input → correct output shape) — needs GPU
+- [x] Convert training from LoRA to full FT — `use_lora=False` in config
+- [x] Implement causal temporal attention mask — `_build_block_causal_mask` in `wan_video_dit.py`
+- [x] Implement MultiModalKVCache — `mova/diffusion/models/kv_cache.py`
+- [ ] Verify KV-cache matches non-cached output — needs GPU
+- [x] DualForce training script + FSDP launch — `dualforce_train.py`, `dualforce_train_8gpu.sh`
+- [x] DualForce inference pipeline — `pipeline_dualforce.py` with sliding window
+- [x] DualForce dataset class — `dualforce_dataset.py` with multi-modal features
+- [x] Factory function — `DualForceTrain_from_pretrained` registered in DIFFUSION_PIPELINES
+- [x] Trainer generalization — AccelerateTrainer batch-key agnostic
 
 **Milestone:** MOVA-Lite forward pass works, <50GB VRAM
 
