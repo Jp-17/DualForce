@@ -2,7 +2,7 @@
 
 > Project: DualForce - 3D-Aware Autoregressive Diffusion for Talking Head Generation
 > Started: 2026-02-21
-> Last Updated: 2026-02-21 (Session 7)
+> Last Updated: 2026-02-21 (Session 8)
 
 ---
 
@@ -15,6 +15,7 @@
 | 2026-02-21 | v0.3 | Dataset class, preprocessing pipeline, causal attention, KV-cache all implemented. Phase 1 architecture ~90% complete. |
 | 2026-02-21 | v0.4 | Training/inference scripts, factory function, trainer generalization, FSDP config. Phase 1 CODE COMPLETE. |
 | 2026-02-21 | v0.5 | Phase 3 audio conditioning: AudioConditioningModule, DualAdaLNZero, gated cross-attention. |
+| 2026-02-21 | v0.6 | Evaluation pipeline (5 metrics), inference rewrite with dual-tower+CFG+audio. |
 
 ---
 
@@ -275,6 +276,74 @@ All Phase 1 code has been written. Remaining items require GPU access:
 
 ---
 
+## 2026-02-21 - Session 8: Evaluation Pipeline & Inference Rewrite
+
+### Phase 5.1 — Evaluation Pipeline (COMPLETE)
+All 5 metrics implemented with individual scripts and an orchestrator:
+
+- [x] `scripts/eval/compute_fvd.py` — FVD using R3D-18 (I3D-like) video features
+  - VideoDataset with temporal sampling, trilinear resize, ImageNet normalization
+  - Fréchet distance computation with scipy.linalg.sqrtm
+- [x] `scripts/eval/compute_fid.py` — FID using Inception-v3 frame features
+  - VideoFrameDataset for per-frame extraction across all videos
+  - Fréchet distance in 2048-dim Inception feature space
+- [x] `scripts/eval/compute_identity.py` — ACD/CSIM using ArcFace (insightface)
+  - Paired reference-image + generated-video evaluation
+  - ACD = mean L2 distance, CSIM = mean cosine similarity
+  - Fallback to ResNet50 if insightface not installed
+- [x] `scripts/eval/compute_sync.py` — Sync-C/Sync-D using SyncNet
+  - SyncNetModel with visual (mouth crop) + audio (MFCC) encoders
+  - Sliding window evaluation with 5-frame windows
+  - Mouth crop extraction via OpenCV Haar cascade
+- [x] `scripts/eval/compute_pose.py` — APD using MediaPipe face mesh
+  - Per-frame head pose (yaw, pitch, roll) via solvePnP
+  - Per-axis error breakdown
+  - Fallback to OpenCV cascade if MediaPipe unavailable
+- [x] `scripts/eval/run_eval.py` — Orchestrator
+  - Two modes: end-to-end (generate + evaluate) or metrics-only
+  - Selective metric computation via `--metrics fvd fid identity sync pose`
+  - JSON report output with all results
+
+**Git commit:** `7056b56` — "Add evaluation pipeline: FVD, FID, ACD/CSIM, Sync-C/D, APD (Phase 5)"
+
+### Inference Pipeline Rewrite (COMPLETE)
+Major overhaul of `mova/diffusion/pipelines/pipeline_dualforce.py`:
+
+- [x] Full dual-tower forward with bridge cross-attention (was a TODO placeholder)
+- [x] Classifier-free guidance (CFG) with negative prompt support
+- [x] Audio conditioning integration in shallow layers during inference
+- [x] Per-frame DualAdaLNZero modulation during inference
+- [x] Fixed hardcoded `"cuda"` in `torch.autocast` (same bug as training pipeline)
+- [x] Proper patchify/unpatchify and tokenize/detokenize flow matching DiT conventions
+- [x] Struct latent joint generation (when not provided as input, generated alongside video)
+- [x] Cross-RoPE alignment for bridge during inference
+
+**Git commit:** `5a9d66b` — "Rewrite inference pipeline with dual-tower, CFG, audio conditioning"
+
+---
+
+## Current Phase Status
+
+### Phase 0 Progress
+| Task | Status | Notes |
+|------|--------|-------|
+| MOVA inference verification | Pending | Needs GPU server |
+| Environment setup | Pending | Script ready: `scripts/setup_env.sh` |
+| HDTF download | Pending | Script ready: `scripts/download/download_hdtf.py` |
+| CelebV-HQ download | Pending | Script ready: `scripts/download/download_celebvhq.py` |
+| VFHQ-512 download | Pending | Priority 3 |
+| Preprocessing pipeline | **Done** | 7-step pipeline + runner script |
+
+### Phase 1 Progress (Architecture) — COMPLETE
+All code written. Forward pass verification pending GPU.
+
+### Phase 3 Progress (Multi-Modal Architecture) — COMPLETE
+- AudioConditioningModule, DualAdaLNZero, gated cross-attention all implemented
+- Integrated into both training and inference pipelines
+
+### Phase 5 Progress (Evaluation) — COMPLETE
+All 5 metrics implemented: FVD, FID, ACD/CSIM, Sync-C/D, APD
+
 ## Next Immediate Tasks (requires GPU)
 
 1. **Forward pass verification** - Run DualForceTrain with random data, verify output shapes and loss computation
@@ -287,6 +356,9 @@ All Phase 1 code has been written. Remaining items require GPU access:
 
 | Commit | Description |
 |--------|-------------|
+| `5a9d66b` | Rewrite inference pipeline with dual-tower, CFG, audio conditioning |
+| `7056b56` | Add evaluation pipeline: FVD, FID, ACD/CSIM, Sync-C/D, APD (Phase 5) |
+| `6f502db` | Update progress log: Phase 3 audio conditioning complete |
 | `9b5bcd7` | Add audio conditioning module and per-frame AdaLN (Phase 3) |
 | `5f404cf` | Add CelebV-HQ download script and environment setup |
 | `98aefc6` | Fix bugs, add verification scripts and HDTF download tool |
@@ -320,6 +392,12 @@ All Phase 1 code has been written. Remaining items require GPU access:
 | `mova/datasets/dualforce_dataset.py` | Multi-modal dataset |
 | `scripts/training_scripts/dualforce_train.py` | Training launch script |
 | `scripts/dualforce_inference.py` | Inference CLI script |
+| `scripts/eval/compute_fvd.py` | FVD metric (R3D-18 features) |
+| `scripts/eval/compute_fid.py` | FID metric (Inception-v3 features) |
+| `scripts/eval/compute_identity.py` | ACD/CSIM identity metrics (ArcFace) |
+| `scripts/eval/compute_sync.py` | Sync-C/Sync-D lip-sync metrics (SyncNet) |
+| `scripts/eval/compute_pose.py` | APD head pose metric (MediaPipe) |
+| `scripts/eval/run_eval.py` | Evaluation orchestrator |
 | `scripts/preprocess/01-07_*.py` | Preprocessing pipeline (7 scripts) |
 | `scripts/preprocess/run_pipeline.sh` | Pipeline runner |
 
