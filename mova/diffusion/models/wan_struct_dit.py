@@ -277,23 +277,26 @@ class WanStructModel(ModelMixin, ConfigMixin):
                 return module(*inputs)
             return custom_forward
 
+        # Determine causal grid for struct tokens (1D: each token = 1 frame)
+        causal_grid = (f, 1, 1) if self.causal_temporal else None
+
         for block in self.blocks:
             if self.training and use_gradient_checkpointing:
                 if use_gradient_checkpointing_offload:
                     with torch.autograd.graph.save_on_cpu():
                         x = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(block),
-                            x, context, t_mod, freqs,
+                            x, context, t_mod, freqs, causal_grid,
                             use_reentrant=False,
                         )
                 else:
                     x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
-                        x, context, t_mod, freqs,
+                        x, context, t_mod, freqs, causal_grid,
                         use_reentrant=False,
                     )
             else:
-                x = block(x, context, t_mod, freqs)
+                x = block(x, context, t_mod, freqs, causal_grid_size=causal_grid)
 
         # Output head
         x = self.head(x, t)

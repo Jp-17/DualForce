@@ -254,6 +254,11 @@ class DualForceTrain(DiffusionPipeline):
                 return module(*inputs)
             return _fn
 
+        # Determine causal grid sizes for each tower
+        visual_causal_grid = grid_size if getattr(self.video_dit, 'causal_temporal', False) else None
+        # Struct tokens are 1D temporal: treat as (num_tokens, 1, 1) for block-causal mask
+        struct_causal_grid = (struct_x.shape[1], 1, 1) if getattr(self.struct_dit, 'causal_temporal', False) else None
+
         # Forward through paired layers
         for layer_idx in range(min_layers):
             visual_block = self.video_dit.blocks[layer_idx]
@@ -296,17 +301,17 @@ class DualForceTrain(DiffusionPipeline):
                     with torch.autograd.graph.save_on_cpu():
                         visual_x = torch.utils.checkpoint.checkpoint(
                             _make_custom_forward(visual_block),
-                            visual_x, visual_context, visual_t_mod, visual_freqs,
+                            visual_x, visual_context, visual_t_mod, visual_freqs, visual_causal_grid,
                             use_reentrant=False,
                         )
                 else:
                     visual_x = torch.utils.checkpoint.checkpoint(
                         _make_custom_forward(visual_block),
-                        visual_x, visual_context, visual_t_mod, visual_freqs,
+                        visual_x, visual_context, visual_t_mod, visual_freqs, visual_causal_grid,
                         use_reentrant=False,
                     )
             else:
-                visual_x = visual_block(visual_x, visual_context, visual_t_mod, visual_freqs)
+                visual_x = visual_block(visual_x, visual_context, visual_t_mod, visual_freqs, causal_grid_size=visual_causal_grid)
 
             # Struct DiT block
             if self.use_gradient_checkpointing and self.training:
@@ -314,17 +319,17 @@ class DualForceTrain(DiffusionPipeline):
                     with torch.autograd.graph.save_on_cpu():
                         struct_x = torch.utils.checkpoint.checkpoint(
                             _make_custom_forward(struct_block),
-                            struct_x, struct_context, struct_t_mod, struct_freqs,
+                            struct_x, struct_context, struct_t_mod, struct_freqs, struct_causal_grid,
                             use_reentrant=False,
                         )
                 else:
                     struct_x = torch.utils.checkpoint.checkpoint(
                         _make_custom_forward(struct_block),
-                        struct_x, struct_context, struct_t_mod, struct_freqs,
+                        struct_x, struct_context, struct_t_mod, struct_freqs, struct_causal_grid,
                         use_reentrant=False,
                     )
             else:
-                struct_x = struct_block(struct_x, struct_context, struct_t_mod, struct_freqs)
+                struct_x = struct_block(struct_x, struct_context, struct_t_mod, struct_freqs, causal_grid_size=struct_causal_grid)
 
         # Process remaining video layers (if video has more layers than struct)
         for layer_idx in range(min_layers, len(self.video_dit.blocks)):
@@ -332,11 +337,11 @@ class DualForceTrain(DiffusionPipeline):
             if self.use_gradient_checkpointing and self.training:
                 visual_x = torch.utils.checkpoint.checkpoint(
                     _make_custom_forward(visual_block),
-                    visual_x, visual_context, visual_t_mod, visual_freqs,
+                    visual_x, visual_context, visual_t_mod, visual_freqs, visual_causal_grid,
                     use_reentrant=False,
                 )
             else:
-                visual_x = visual_block(visual_x, visual_context, visual_t_mod, visual_freqs)
+                visual_x = visual_block(visual_x, visual_context, visual_t_mod, visual_freqs, causal_grid_size=visual_causal_grid)
 
         # Process remaining struct layers
         for layer_idx in range(min_layers, len(self.struct_dit.blocks)):
@@ -344,11 +349,11 @@ class DualForceTrain(DiffusionPipeline):
             if self.use_gradient_checkpointing and self.training:
                 struct_x = torch.utils.checkpoint.checkpoint(
                     _make_custom_forward(struct_block),
-                    struct_x, struct_context, struct_t_mod, struct_freqs,
+                    struct_x, struct_context, struct_t_mod, struct_freqs, struct_causal_grid,
                     use_reentrant=False,
                 )
             else:
-                struct_x = struct_block(struct_x, struct_context, struct_t_mod, struct_freqs)
+                struct_x = struct_block(struct_x, struct_context, struct_t_mod, struct_freqs, causal_grid_size=struct_causal_grid)
 
         # Gather from context parallel
         if sp_enabled:

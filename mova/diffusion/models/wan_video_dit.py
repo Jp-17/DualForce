@@ -91,6 +91,65 @@ def flash_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_heads
     return x
 
 
+def _build_block_causal_mask(
+    num_frames: int,
+    spatial_size: int,
+    device: torch.device,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Build a block-causal attention mask for video tokens.
+
+    Tokens are ordered as (f * h * w). Frame t can only attend to frames <= t.
+    Within the same frame, attention is bidirectional (full).
+
+    Args:
+        num_frames: Number of temporal frames (f)
+        spatial_size: Spatial tokens per frame (h * w)
+        device: Target device
+        dtype: Target dtype
+
+    Returns:
+        mask: [1, 1, f*h*w, f*h*w] boolean mask (True = attend, False = mask out)
+              Compatible with scaled_dot_product_attention's attn_mask.
+    """
+    total = num_frames * spatial_size
+    # Build frame index for each token position
+    frame_idx = torch.arange(total, device=device) // spatial_size  # [total]
+    # mask[i, j] = True iff frame_idx[i] >= frame_idx[j]  (i can attend to j)
+    mask = frame_idx.unsqueeze(1) >= frame_idx.unsqueeze(0)  # [total, total]
+    return mask.unsqueeze(0).unsqueeze(0)  # [1, 1, total, total]
+
+
+def flash_attention_causal(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    num_heads: int,
+    num_frames: int,
+    spatial_size: int,
+) -> torch.Tensor:
+    """Attention with block-causal temporal masking for video tokens.
+
+    Args:
+        q, k, v: [B, S, dim] where S = num_frames * spatial_size
+        num_heads: Number of attention heads
+        num_frames: Temporal frame count (f)
+        spatial_size: Spatial tokens per frame (h * w)
+    """
+    q = rearrange(q, "b s (n d) -> b n s d", n=num_heads)
+    k = rearrange(k, "b s (n d) -> b n s d", n=num_heads)
+    v = rearrange(v, "b s (n d) -> b n s d", n=num_heads)
+
+    # Build block-causal mask
+    mask = _build_block_causal_mask(
+        num_frames, spatial_size, device=q.device, dtype=q.dtype
+    )
+
+    x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+    x = rearrange(x, "b n s d -> b s (n d)", n=num_heads)
+    return x
+
+
 @torch.compile(fullgraph=True)
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor):
     return (x * (1 + scale) + shift)
@@ -155,9 +214,20 @@ class AttentionModule(nn.Module):
     def __init__(self, num_heads):
         super().__init__()
         self.num_heads = num_heads
-        
-    def forward(self, q, k, v):
-        x = flash_attention(q=q, k=k, v=v, num_heads=self.num_heads)
+
+    def forward(self, q, k, v, causal_grid_size=None):
+        if causal_grid_size is not None:
+            # Block-causal temporal attention
+            num_frames = causal_grid_size[0]
+            spatial_size = causal_grid_size[1] * causal_grid_size[2]
+            x = flash_attention_causal(
+                q=q, k=k, v=v,
+                num_heads=self.num_heads,
+                num_frames=num_frames,
+                spatial_size=spatial_size,
+            )
+        else:
+            x = flash_attention(q=q, k=k, v=v, num_heads=self.num_heads)
         return x
 
 
@@ -174,10 +244,10 @@ class SelfAttention(nn.Module):
         self.o = nn.Linear(dim, dim)
         self.norm_q = RMSNorm(dim, eps=eps)
         self.norm_k = RMSNorm(dim, eps=eps)
-        
+
         self.attn = AttentionModule(self.num_heads)
 
-    def forward(self, x, freqs):
+    def forward(self, x, freqs, causal_grid_size=None):
         q = self.norm_q(self.q(x))
         k = self.norm_k(self.k(x))
         v = self.v(x)
@@ -185,7 +255,7 @@ class SelfAttention(nn.Module):
             freqs = freqs.to_local()
         q = rope_apply_head_dim(q, freqs, self.head_dim)
         k = rope_apply_head_dim(k, freqs, self.head_dim)
-        x = self.attn(q, k, v)
+        x = self.attn(q, k, v, causal_grid_size=causal_grid_size)
         return self.o(x)
 
 
@@ -272,7 +342,7 @@ class DiTBlock(nn.Module):
         self.modulation = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
         self.gate = GateModule()
 
-    def forward(self, x, context, t_mod, freqs):
+    def forward(self, x, context, t_mod, freqs, causal_grid_size=None):
         has_seq = len(t_mod.shape) == 4
         chunk_dim = 2 if has_seq else 1
         # msa: multi-head self-attention  mlp: multi-layer perceptron
@@ -284,7 +354,7 @@ class DiTBlock(nn.Module):
                 shift_mlp.squeeze(2), scale_mlp.squeeze(2), gate_mlp.squeeze(2),
             )
         input_x = modulate(self.norm1(x), shift_msa, scale_msa)
-        x = self.gate(x, gate_msa, self.self_attn(input_x, freqs))
+        x = self.gate(x, gate_msa, self.self_attn(input_x, freqs, causal_grid_size=causal_grid_size))
         x = x + self.cross_attn(self.norm3(x), context)
         input_x = modulate(self.norm2(x), shift_mlp, scale_mlp)
         x = self.gate(x, gate_mlp, self.ffn(input_x))
@@ -355,6 +425,7 @@ class WanModel(ModelMixin, ConfigMixin):
         require_vae_embedding: bool = True,
         require_clip_embedding: bool = True,
         fuse_vae_embedding_in_latents: bool = False,
+        causal_temporal: bool = False,
     ):
         super().__init__()
         self.dim = dim
@@ -365,6 +436,7 @@ class WanModel(ModelMixin, ConfigMixin):
         self.require_vae_embedding = require_vae_embedding
         self.require_clip_embedding = require_clip_embedding
         self.fuse_vae_embedding_in_latents = fuse_vae_embedding_in_latents
+        self.causal_temporal = causal_temporal
 
         self.patch_embedding = nn.Conv3d(
             in_dim, dim, kernel_size=patch_size, stride=patch_size)
@@ -449,22 +521,25 @@ class WanModel(ModelMixin, ConfigMixin):
             return custom_forward
 
         for block in self.blocks:
+            # Determine causal grid for this forward pass
+            causal_grid = (f, h, w) if self.causal_temporal else None
+
             if self.training and use_gradient_checkpointing:
                 if use_gradient_checkpointing_offload:
                     with torch.autograd.graph.save_on_cpu():
                         x = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(block),
-                            x, context, t_mod, freqs,
+                            x, context, t_mod, freqs, causal_grid,
                             use_reentrant=False,
                         )
                 else:
                     x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
-                        x, context, t_mod, freqs,
+                        x, context, t_mod, freqs, causal_grid,
                         use_reentrant=False,
                     )
             else:
-                x = block(x, context, t_mod, freqs)
+                x = block(x, context, t_mod, freqs, causal_grid_size=causal_grid)
 
         x = self.head(x, t)
         x = self.unpatchify(x, (f, h, w))
