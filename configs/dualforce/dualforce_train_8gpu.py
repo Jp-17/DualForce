@@ -202,6 +202,7 @@ trainer = dict(
     train_modules=[
         "video_dit", "struct_dit", "dual_tower_bridge",
         "audio_conditioning", "video_adaln", "struct_adaln",
+        "flame_proj", "lip_sync_video_proj", "lip_sync_audio_proj",
     ],
 
     # Full fine-tuning (no LoRA)

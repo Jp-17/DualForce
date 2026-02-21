@@ -102,6 +102,10 @@ class DualForceTrain(DiffusionPipeline):
         audio_conditioning: Optional[AudioConditioningModule] = None,
         video_adaln: Optional[DualAdaLNZero] = None,
         struct_adaln: Optional[DualAdaLNZero] = None,
+        # Loss auxiliary modules
+        flame_proj: Optional[nn.Linear] = None,
+        lip_sync_video_proj: Optional[nn.Linear] = None,
+        lip_sync_audio_proj: Optional[nn.Linear] = None,
         loss_config: Optional[Dict] = None,
         # Gradient checkpointing
         use_gradient_checkpointing: bool = False,
@@ -124,6 +128,11 @@ class DualForceTrain(DiffusionPipeline):
         self.audio_conditioning = audio_conditioning
         self.video_adaln = video_adaln
         self.struct_adaln = struct_adaln
+
+        # Loss auxiliary projectors
+        self.flame_proj = flame_proj
+        self.lip_sync_video_proj = lip_sync_video_proj
+        self.lip_sync_audio_proj = lip_sync_audio_proj
 
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
@@ -607,16 +616,84 @@ class DualForceTrain(DiffusionPipeline):
         struct_loss = F.mse_loss(struct_pred.to(struct_target.dtype), struct_target)
 
         # L_flame: FLAME alignment loss (optional)
+        # Soft alignment: denoise struct prediction to estimate clean struct,
+        # then project to FLAME space and compare with ground truth FLAME params.
         flame_loss = torch.tensor(0.0, device=device, dtype=video_loss.dtype)
         if flame_params is not None and self.loss_config.flame_weight > 0:
-            # TODO: Implement FLAME alignment once struct decoder is built
-            pass
+            flame_params = flame_params.to(dtype=dtype, device=device)
+            # Estimate clean struct from flow matching: x0_hat = xt - sigma * v_pred
+            # noisy_struct = (1-sigma)*struct + sigma*noise, v_pred ≈ noise - struct
+            # x0_hat ≈ noisy_struct - sigma * v_pred
+            sigma_s_expanded = sigma_s.unsqueeze(1)  # [B, 1, T]
+            struct_x0_hat = noisy_struct - sigma_s_expanded * struct_pred.to(noisy_struct.dtype)
+
+            # Project struct latent -> FLAME parameter space via learned linear
+            if hasattr(self, 'flame_proj') and self.flame_proj is not None:
+                # struct_x0_hat: [B, 128, T] -> [B, T, 128] -> flame_proj -> [B, T, 159]
+                struct_for_flame = struct_x0_hat.permute(0, 2, 1)  # [B, T, 128]
+                flame_pred = self.flame_proj(struct_for_flame)  # [B, T, 159]
+
+                # Align temporal dimensions (struct T may differ from FLAME T)
+                T_flame = flame_params.shape[1]
+                T_pred = flame_pred.shape[1]
+                min_T = min(T_flame, T_pred)
+
+                flame_loss = F.mse_loss(
+                    flame_pred[:, :min_T],
+                    flame_params[:, :min_T],
+                )
 
         # L_lip_sync: Contrastive lip-sync loss (optional)
+        # Measures whether audio features align with the predicted visual content.
+        # Positive pair: audio and video from the same timestep
+        # Negative pair: audio and video from different timesteps (shifted)
         lip_sync_loss = torch.tensor(0.0, device=device, dtype=video_loss.dtype)
         if audio_features is not None and self.loss_config.lip_sync_weight > 0:
-            # TODO: Implement lip-sync contrastive loss
-            pass
+            audio_features = audio_features.to(dtype=dtype, device=device)
+            # Estimate clean video from flow matching
+            sigma_v_expanded = sigma_v.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # [B, 1, T, 1, 1]
+            video_x0_hat = noisy_video - sigma_v_expanded * video_pred.to(noisy_video.dtype)
+
+            # Pool video spatially and extract lower-face region features
+            # video_x0_hat: [B, 16, T', H', W'] -> pool -> [B, T', 16]
+            video_temporal = video_x0_hat.mean(dim=(-1, -2)).permute(0, 2, 1)  # [B, T', 16]
+
+            if hasattr(self, 'lip_sync_video_proj') and self.lip_sync_video_proj is not None:
+                # Project video features to shared embedding space
+                video_emb = self.lip_sync_video_proj(video_temporal)  # [B, T', D_sync]
+                video_emb = F.normalize(video_emb, dim=-1)
+
+                # Temporally align audio features to video latent frame count
+                T_video_lat = video_emb.shape[1]
+                T_audio = audio_features.shape[1]
+                if T_audio != T_video_lat:
+                    audio_aligned = F.interpolate(
+                        audio_features.permute(0, 2, 1),  # [B, 1024, T_audio]
+                        size=T_video_lat,
+                        mode='linear',
+                        align_corners=False,
+                    ).permute(0, 2, 1)  # [B, T_video_lat, 1024]
+                else:
+                    audio_aligned = audio_features
+
+                # Project audio to shared space
+                audio_emb = self.lip_sync_audio_proj(audio_aligned)  # [B, T', D_sync]
+                audio_emb = F.normalize(audio_emb, dim=-1)
+
+                # Contrastive loss: in-sync (diagonal) vs out-of-sync (off-diagonal)
+                # For each sample in batch, compute [T', T'] similarity matrix
+                # Positive pairs: same timestep, Negative: different timestep
+                temperature = 0.07
+                B_cur = video_emb.shape[0]
+                sync_loss_accum = torch.tensor(0.0, device=device, dtype=video_emb.dtype)
+                for b in range(B_cur):
+                    sim = torch.matmul(video_emb[b], audio_emb[b].T) / temperature  # [T', T']
+                    labels = torch.arange(T_video_lat, device=device)
+                    sync_loss_accum = sync_loss_accum + (
+                        F.cross_entropy(sim, labels) + F.cross_entropy(sim.T, labels)
+                    ) / 2
+
+                lip_sync_loss = sync_loss_accum / max(B_cur, 1)
 
         # Total loss
         total_loss = (
@@ -658,6 +735,7 @@ class DualForceTrain(DiffusionPipeline):
             train_modules = [
                 "video_dit", "struct_dit", "dual_tower_bridge",
                 "audio_conditioning", "video_adaln", "struct_adaln",
+                "flame_proj", "lip_sync_video_proj", "lip_sync_audio_proj",
             ]
 
         # Freeze everything first
@@ -785,6 +863,27 @@ def DualForceTrain_from_pretrained(
             struct_adaln = DualAdaLNZero(dim=struct_dim, freq_dim=freq_dim).to(torch_dtype)
             print(f"[DualForce] DualAdaLNZero: {sum(p.numel() for p in video_adaln.parameters())/1e6:.1f}M + {sum(p.numel() for p in struct_adaln.parameters())/1e6:.1f}M params")
 
+        # Build loss auxiliary modules
+        struct_in_dim = struct_dit_cfg.get('in_dim', 128)
+        flame_dim = loss_config.get('flame_dim', 159) if loss_config else 159
+
+        flame_proj = nn.Linear(struct_in_dim, flame_dim).to(torch_dtype)
+        print(f"[DualForce] FLAME projection: {struct_in_dim} -> {flame_dim}")
+
+        # Lip-sync projectors: map video latent features and audio features to shared space
+        sync_dim = 256
+        lip_sync_video_proj = nn.Sequential(
+            nn.Linear(16, sync_dim),  # 16 = VAE latent channels
+            nn.ReLU(),
+            nn.Linear(sync_dim, sync_dim),
+        ).to(torch_dtype)
+        lip_sync_audio_proj = nn.Sequential(
+            nn.Linear(1024, sync_dim),  # 1024 = HuBERT dim
+            nn.ReLU(),
+            nn.Linear(sync_dim, sync_dim),
+        ).to(torch_dtype)
+        print(f"[DualForce] Lip-sync projectors: video(16->{sync_dim}), audio(1024->{sync_dim})")
+
         model = DualForceTrain(
             video_vae=video_vae,
             text_encoder=text_encoder,
@@ -796,6 +895,9 @@ def DualForceTrain_from_pretrained(
             audio_conditioning=audio_cond,
             video_adaln=video_adaln,
             struct_adaln=struct_adaln,
+            flame_proj=flame_proj,
+            lip_sync_video_proj=lip_sync_video_proj,
+            lip_sync_audio_proj=lip_sync_audio_proj,
             loss_config=loss_config,
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
