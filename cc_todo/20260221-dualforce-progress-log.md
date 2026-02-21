@@ -2,7 +2,7 @@
 
 > Project: DualForce - 3D-Aware Autoregressive Diffusion for Talking Head Generation
 > Started: 2026-02-21
-> Last Updated: 2026-02-21 (Session 8)
+> Last Updated: 2026-02-21 (Session 8, final update)
 
 ---
 
@@ -341,8 +341,15 @@ All code written. Forward pass verification pending GPU.
 - AudioConditioningModule, DualAdaLNZero, gated cross-attention all implemented
 - Integrated into both training and inference pipelines
 
-### Phase 5 Progress (Evaluation) — COMPLETE
-All 5 metrics implemented: FVD, FID, ACD/CSIM, Sync-C/D, APD
+### Phase 4 Progress (Training Losses) — COMPLETE
+- All 4 loss functions implemented: L_video, L_struct, L_flame, L_lip_sync
+- FLAME alignment: struct x0 estimation → linear projection → MSE
+- Lip-sync: contrastive loss in shared 256-dim embedding space
+
+### Phase 5 Progress (Evaluation & Ablation) — COMPLETE
+- 5 metrics: FVD, FID, ACD/CSIM, Sync-C/D, APD
+- Batch generation script for evaluation
+- 7 ablation configs: no-struct, unidirectional, fusion depth (4/12), sigma_s (0.5/1.0), long sequence eval
 
 ## Next Immediate Tasks (requires GPU)
 
@@ -356,6 +363,9 @@ All 5 metrics implemented: FVD, FID, ACD/CSIM, Sync-C/D, APD
 
 | Commit | Description |
 |--------|-------------|
+| `dcf39f1` | Add ablation study configs for 5 key experiments (Phase 5.2) |
+| `e13d88d` | Implement FLAME alignment and lip-sync contrastive losses |
+| `160d2e2` | Add batch generation script, cleanup unused import, update progress log |
 | `5a9d66b` | Rewrite inference pipeline with dual-tower, CFG, audio conditioning |
 | `7056b56` | Add evaluation pipeline: FVD, FID, ACD/CSIM, Sync-C/D, APD (Phase 5) |
 | `6f502db` | Update progress log: Phase 3 audio conditioning complete |
@@ -398,6 +408,8 @@ All 5 metrics implemented: FVD, FID, ACD/CSIM, Sync-C/D, APD
 | `scripts/eval/compute_sync.py` | Sync-C/Sync-D lip-sync metrics (SyncNet) |
 | `scripts/eval/compute_pose.py` | APD head pose metric (MediaPipe) |
 | `scripts/eval/run_eval.py` | Evaluation orchestrator |
+| `scripts/eval/batch_generate.py` | Batch video generation for eval |
+| `configs/dualforce/ablations/*.py` | 7 ablation study configs |
 | `scripts/preprocess/01-07_*.py` | Preprocessing pipeline (7 scripts) |
 | `scripts/preprocess/run_pipeline.sh` | Pipeline runner |
 
@@ -410,6 +422,66 @@ All 5 metrics implemented: FVD, FID, ACD/CSIM, Sync-C/D, APD
 | `mova/diffusion/pipelines/__init__.py` | Register DualForceTrain, DualForceInference |
 | `mova/datasets/__init__.py` | Register DualForceDataset |
 | `mova/engine/trainer/accelerate/accelerate_trainer.py` | Batch-key agnostic training loop |
+
+---
+
+## Code Completeness Summary (All Pre-GPU Work Done)
+
+| Component | Status | Files |
+|-----------|--------|-------|
+| **Architecture** | | |
+| MOVA-Lite Video DiT | COMPLETE | `wan_video_dit.py` (modified) |
+| 3D Structure DiT | COMPLETE | `wan_struct_dit.py` |
+| Dual-Tower Bridge | COMPLETE | `interactionv2.py` (reused) |
+| KV-Cache | COMPLETE | `kv_cache.py` |
+| Block-Causal Attention | COMPLETE | `wan_video_dit.py` (modified) |
+| Audio Conditioning | COMPLETE | `audio_conditioning.py` |
+| DualAdaLNZero | COMPLETE | `audio_conditioning.py` |
+| **Training** | | |
+| DualForceTrain Pipeline | COMPLETE | `dualforce_train.py` |
+| DiffusionForcing Scheduler | COMPLETE | `diffusion_forcing.py` |
+| Multi-Modal Dataset | COMPLETE | `dualforce_dataset.py` |
+| L_video (flow matching) | COMPLETE | `dualforce_train.py` |
+| L_struct (flow matching) | COMPLETE | `dualforce_train.py` |
+| L_flame (alignment) | COMPLETE | `dualforce_train.py` |
+| L_lip_sync (contrastive) | COMPLETE | `dualforce_train.py` |
+| FSDP Config | COMPLETE | `fsdp_8gpu.yaml` |
+| Launch Script | COMPLETE | `dualforce_train_8gpu.sh` |
+| **Inference** | | |
+| AR Sliding Window | COMPLETE | `pipeline_dualforce.py` |
+| Dual-Tower Inference | COMPLETE | `pipeline_dualforce.py` |
+| CFG Support | COMPLETE | `pipeline_dualforce.py` |
+| Audio Conditioning | COMPLETE | `pipeline_dualforce.py` |
+| **Evaluation** | | |
+| FVD (I3D/R3D features) | COMPLETE | `compute_fvd.py` |
+| FID (Inception-v3) | COMPLETE | `compute_fid.py` |
+| ACD/CSIM (ArcFace) | COMPLETE | `compute_identity.py` |
+| Sync-C/Sync-D (SyncNet) | COMPLETE | `compute_sync.py` |
+| APD (MediaPipe) | COMPLETE | `compute_pose.py` |
+| Orchestrator | COMPLETE | `run_eval.py` |
+| Batch Generation | COMPLETE | `batch_generate.py` |
+| **Data** | | |
+| Preprocessing Pipeline | COMPLETE | `scripts/preprocess/01-07_*.py` |
+| HDTF Download | COMPLETE | `download_hdtf.py` |
+| CelebV-HQ Download | COMPLETE | `download_celebvhq.py` |
+| Environment Setup | COMPLETE | `setup_env.sh` |
+| **Ablation Configs** | | |
+| No Struct Stream | COMPLETE | `ablations/no_struct_stream.py` |
+| Unidirectional Bridge | COMPLETE | `ablations/unidirectional_bridge.py` |
+| Fusion Depth 4/12 | COMPLETE | `ablations/fusion_depth_{4,12}.py` |
+| Sigma_s 0.5/1.0 | COMPLETE | `ablations/sigma_s_{0.5,1.0}.py` |
+| Long Sequence Eval | COMPLETE | `ablations/long_sequence_eval.py` |
+
+### What's Left (GPU-Required)
+
+1. Run `scripts/verify_mova_inference.py` to confirm base MOVA weights work
+2. Run `scripts/verify_dualforce.py` to validate forward pass shapes + memory
+3. Download datasets (HDTF + CelebV-HQ minimum)
+4. Run preprocessing pipeline on downloaded data
+5. Phase 2: Causal video pretraining (~3-5 days on 8x A100)
+6. Phase 4: Multi-modal Diffusion Forcing training
+7. Phase 5: Run evaluation and ablation experiments
+8. Phase 6: Paper writing
 
 ---
 
