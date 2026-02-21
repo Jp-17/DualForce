@@ -2,7 +2,7 @@
 
 > Project: DualForce - 3D-Aware Autoregressive Diffusion for Talking Head Generation
 > Started: 2026-02-21
-> Last Updated: 2026-02-21 (Session 5)
+> Last Updated: 2026-02-21 (Session 7)
 
 ---
 
@@ -14,6 +14,7 @@
 | 2026-02-21 | v0.2 | CRITICAL correction: actual MOVA-360p is dim=5120/40L (not 3072/30L). Created core DualForce code. |
 | 2026-02-21 | v0.3 | Dataset class, preprocessing pipeline, causal attention, KV-cache all implemented. Phase 1 architecture ~90% complete. |
 | 2026-02-21 | v0.4 | Training/inference scripts, factory function, trainer generalization, FSDP config. Phase 1 CODE COMPLETE. |
+| 2026-02-21 | v0.5 | Phase 3 audio conditioning: AudioConditioningModule, DualAdaLNZero, gated cross-attention. |
 
 ---
 
@@ -243,6 +244,37 @@ All Phase 1 code has been written. Remaining items require GPU access:
 
 ---
 
+## 2026-02-21 - Session 7: Phase 3 Audio Conditioning & Per-Frame AdaLN
+
+### Phase 3.4 — Audio Conditioning Path (COMPLETE)
+- [x] `mova/diffusion/models/audio_conditioning.py` — New module with 5 classes:
+  1. **AudioProjector**: LayerNorm → Linear(1024, 1536) → GELU → Linear → projects HuBERT features
+  2. **AudioCondCrossAttention**: One-directional cross-attention with gated residual (`sigmoid(gate) * attn_out`, gate init=0)
+  3. **AudioConditioningModule**: Container managing per-layer audio→video and audio→struct cross-attention. Includes `align_audio_to_tokens()` for temporal resampling via F.interpolate. Configurable `num_layers` (default 6) for shallow-only conditioning.
+  4. **DualAdaLNZero**: Per-frame sigma → sinusoidal embedding → MLP → 6*dim modulation vectors. Handles both 3D video grids (f,h,w) and 1D struct grids (f,). Output: [B, L, 6, dim]
+  5. **PerFrameDiTBlockWrapper**: Utility to reshape per-frame t_mod to DiTBlock-compatible format
+
+### Integration into DualForceTrain
+- [x] Updated `__init__()`: accepts `audio_conditioning`, `video_adaln`, `struct_adaln` modules
+- [x] Updated `forward_dual_tower()`: applies audio conditioning per layer in shallow blocks
+- [x] Updated `training_step()`: DualAdaLNZero overrides global t_mod with per-frame modulation
+- [x] Updated `freeze_for_training()`: includes new modules in default trainable set
+- [x] Updated factory function: accepts `audio_conditioning_config`, builds all new modules
+
+### Config Update
+- [x] `audio_conditioning_config` added to `diffusion_pipeline` in training config
+- [x] `train_modules` expanded to include `audio_conditioning`, `video_adaln`, `struct_adaln`
+- [x] Updated parameter summary with new module estimates (~43M total new params)
+
+### Design Decisions
+- **Gated residual with near-zero init**: Audio conditioning starts with zero influence, progressively learned. Prevents destabilizing early training.
+- **Shallow-only conditioning (6 layers)**: Audio influences visual/structural features in early layers only; deep layers specialize without audio interference.
+- **Temporal alignment via interpolation**: HuBERT operates at different temporal resolution than video/struct tokens. F.interpolate aligns them.
+
+**Git commit:** `9b5bcd7` — "Add audio conditioning module and per-frame AdaLN (Phase 3)"
+
+---
+
 ## Next Immediate Tasks (requires GPU)
 
 1. **Forward pass verification** - Run DualForceTrain with random data, verify output shapes and loss computation
@@ -255,6 +287,9 @@ All Phase 1 code has been written. Remaining items require GPU access:
 
 | Commit | Description |
 |--------|-------------|
+| `9b5bcd7` | Add audio conditioning module and per-frame AdaLN (Phase 3) |
+| `5f404cf` | Add CelebV-HQ download script and environment setup |
+| `98aefc6` | Fix bugs, add verification scripts and HDTF download tool |
 | `b4d5899` | Add FSDP config, launch script; finalize Phase 1 code completion |
 | `222b2ed` | Add training/inference scripts, factory function, trainer generalization |
 | `7567c46` | Add dataset, preprocessing pipeline, causal attention, KV-cache |
@@ -278,6 +313,7 @@ All Phase 1 code has been written. Remaining items require GPU access:
 | `configs/dualforce/dualforce_train_8gpu.py` | Training config |
 | `mova/diffusion/models/wan_struct_dit.py` | 3D Structure DiT |
 | `mova/diffusion/models/kv_cache.py` | KV-cache for AR inference |
+| `mova/diffusion/models/audio_conditioning.py` | Audio cond + DualAdaLNZero |
 | `mova/diffusion/schedulers/diffusion_forcing.py` | Per-frame noise scheduler |
 | `mova/diffusion/pipelines/dualforce_train.py` | Training pipeline |
 | `mova/diffusion/pipelines/pipeline_dualforce.py` | Inference pipeline |
