@@ -34,13 +34,16 @@ DualForce combines three innovations atop a scaled-down MOVA backbone ("MOVA-Lit
 
 ## 3. Proposal Corrections
 
-| Proposal Statement | Actual Finding | Correction |
+| Proposal Statement | Actual Finding (from checkpoint configs) | Correction |
 |---|---|---|
-| "Wan 2.2 14B, 48 layers, MoE" | WanModel has 30 layers, no MoE | Shrink 30->20 |
+| "Wan 2.2 14B, 48 layers, MoE" | WanModel has **40 layers, dim=5120, no MoE** | Shrink 40->20 layers, 5120->1536 dim |
 | Not mentioned | MOVA has video_dit + video_dit_2 (two-stage) | Drop video_dit_2, use single DiT |
 | "Need to build Diffusion Forcing from scratch" | FlowMatchPairScheduler already supports independent sigma | Extend to per-frame (not just per-sample) |
-| "Need new shallow fusion mechanism" | Bridge already has `shallow_focus` strategy | Adapt existing bridge |
-| "Audio tower → 3D stream" | Bridge projects 3072<->1536 | Keep 3D dim=1536 for compatibility |
+| "Need new shallow fusion mechanism" | Bridge uses `interaction_strategy="full"` (all layers!) | Change to shallow_focus for DualForce |
+| "Audio tower → 3D stream" | Bridge projects 5120<->1536 | Keep 3D dim=1536 for bridge compatibility |
+| Assumed patch_size=(2,2,2) | Actual patch_size=(1,2,2) - no temporal downsampling | Keep (1,2,2) to match VAE output |
+| Assumed audio at 44.1kHz/2048 hop | Actual: 48kHz/960 hop = 50Hz audio tokens | Audio token count is ~2.3x more than expected |
+| "in_dim=16" | Actual in_dim=36 = 16(VAE) + 4(mask) + 16(first_frame) | Keep in_dim=36 for video_dit |
 
 ---
 
@@ -49,20 +52,23 @@ DualForce combines three innovations atop a scaled-down MOVA backbone ("MOVA-Lit
 ### MOVA → DualForce
 
 ```
-MOVA:                           DualForce:
-─────                           ─────────
-video_dit (3072, 30L)      →    video_dit (1536, 20L, causal+KV-cache)
-video_dit_2 (3072, 30L)   →    [REMOVED]
-audio_dit (1536, 30L)      →    struct_dit (1536, 20L, 3D stream)
-Bridge (shallow_focus)     →    Bridge (shallow_focus, video<->3D)
-UMT5 text encoder          →    [KEEP, frozen]
-Video VAE                  →    [KEEP, frozen]
-Audio VAE (DAC)            →    [REMOVED, replaced by HuBERT conditioning]
-                                + HuBERT (frozen) + audio cross-attn [NEW]
-                                + DualAdaLNZero (sigma_v, sigma_s) [NEW]
-                                + MultiModalKVCache [NEW]
-                                + Lip-sync loss, FLAME loss [NEW]
+MOVA (actual from checkpoint):        DualForce:
+──────────────────────────            ─────────
+video_dit (5120, 40L, patch(1,2,2))  → video_dit (1536, 20L, patch(1,2,2), causal+KV-cache)
+video_dit_2 (5120, 40L)             → [REMOVED]
+audio_dit (1536, 30L)               → struct_dit (1536, 20L, 3D stream)
+Bridge (full, all layers)           → Bridge (shallow_focus, video<->3D)
+UMT5 text encoder                   → [KEEP, frozen]
+Video VAE (z=16, stride_t=4, s=8)   → [KEEP, frozen]
+Audio VAE (DAC, 128d, 48kHz, 960hp) → [REMOVED, replaced by HuBERT conditioning]
+                                      + HuBERT (frozen) + audio cross-attn [NEW]
+                                      + DualAdaLNZero (sigma_v, sigma_s) [NEW]
+                                      + MultiModalKVCache [NEW]
+                                      + Lip-sync loss, FLAME loss [NEW]
 ```
+
+**Note on in_dim:** Video DiT input = concat(noisy_latent[16ch], mask[4ch], cond_latent[16ch]) = 36ch total.
+For DualForce we keep in_dim=36 for the video backbone.
 
 ### Key Files to Modify
 

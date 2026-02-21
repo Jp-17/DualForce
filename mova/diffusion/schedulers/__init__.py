@@ -2,6 +2,7 @@ from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 
 from .flow_match_pair import FlowMatchPairScheduler
 from .flow_match import FlowMatchScheduler
+from .diffusion_forcing import DiffusionForcingScheduler
 
 from mova.registry import DIFFUSION_SCHEDULERS
 

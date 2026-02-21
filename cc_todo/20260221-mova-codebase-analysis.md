@@ -1,8 +1,50 @@
 # MOVA Codebase Analysis Report
 
-> Date: 2026-02-21
+> Date: 2026-02-21 (Updated: 2026-02-21 v2 - corrected from actual checkpoint configs)
 > Project: DualForce (based on MOVA fork)
 > Purpose: Thorough analysis of the MOVA codebase to inform DualForce development
+>
+> **IMPORTANT v2 UPDATE:** Initial analysis was based on code default values which
+> differ significantly from the actual MOVA-360p checkpoint. All architecture numbers
+> below are now corrected from `checkpoints/MOVA-360p/*/config.json`.
+
+---
+
+## CRITICAL CORRECTION (v2): Actual vs Code-Default Architecture
+
+The exploration agents initially reported code default values. The actual MOVA-360p
+checkpoint has a **significantly different and larger** architecture:
+
+| Component | Code Default | Actual (checkpoint) | Change |
+|-----------|-------------|-------------------|--------|
+| video_dit dim | 3072 | **5120** | +67% |
+| video_dit ffn_dim | 12288 | **13824** | +12.5% |
+| video_dit num_heads | 24 | **40** | +67% |
+| video_dit num_layers | 30 | **40** | +33% |
+| video_dit in_dim | 16 | **36** (16 VAE + 4 mask + 16 cond) | +125% |
+| video_dit patch_size | (2,2,2) | **(1,2,2)** no temporal downsample | different |
+| audio_dit ffn_dim | 6144 | **8960** | +46% |
+| audio_dit patch_size | (2,1,1) | **[1]** no downsample | different |
+| bridge strategy | "shallow_focus" | **"full"** all layers | different |
+| bridge audio_fps | 21.5 (44100/2048) | **50.0** (48000/960) | different |
+| audio VAE sample_rate | 44100 | **48000** | different |
+| audio VAE hop_length | 2048 | **960** (2*3*4*5*8) | different |
+
+**Key implications for DualForce:**
+1. The model is much larger (~14B video backbone, not ~7B)
+2. No temporal patch downsampling means more video tokens per frame
+3. Bridge uses "full" interaction (all 40 video + 30 audio layers), not shallow_focus
+4. Audio fps is 50Hz (not 21.5Hz), meaning more audio tokens
+
+**Input construction (in_dim=36):**
+```
+noisy_video_latent: [B, 16, T', H', W']  (VAE z_dim=16)
+  +
+y (condition): [B, 20, T', H', W']
+  = mask: [B, 4, T', H', W']    (first frame = 1, rest = 0)
+  + first_frame_latent: [B, 16, T', H', W']  (VAE-encoded first frame + zeros)
+  = 36 channels total
+```
 
 ---
 
@@ -50,23 +92,28 @@ DualForce/ (forked from OpenMOSS/MOVA)
 
 ---
 
-## 2. Model Architecture Detail
+## 2. Model Architecture Detail (Corrected from Checkpoint Configs)
 
 ### 2.1 Video DiT (WanModel)
 
 **Location:** `mova/diffusion/models/wan_video_dit.py`
+**Config source:** `checkpoints/MOVA-360p/video_dit/config.json`
 
-**Config:**
+**Config (CORRECTED):**
 ```
-dim = 3072           # Hidden dimension
-ffn_dim = 12288      # FFN hidden (4x)
-num_heads = 24       # Attention heads (head_dim=128)
-num_layers = 30      # DiT blocks
-patch_size = (2,2,2) # 3D patchification (temporal, height, width)
-in_dim = 16          # VAE latent channels
-out_dim = 16         # Output channels
+dim = 5120           # Hidden dimension (NOT 3072)
+ffn_dim = 13824      # FFN hidden (~2.7x, NOT 4x)
+num_heads = 40       # Attention heads (NOT 24)
+num_layers = 40      # DiT blocks (NOT 30)
+head_dim = 128       # 5120/40
+patch_size = (1,2,2) # NO temporal downsampling (NOT (2,2,2))
+in_dim = 36          # 16 (VAE z) + 20 (4 mask + 16 first_frame latent)
+out_dim = 16         # VAE z_dim
 text_dim = 4096      # UMT5 text embedding dim
 freq_dim = 256       # Frequency embedding dim
+has_image_input = false
+require_vae_embedding = true
+require_clip_embedding = false
 ```
 
 **DiT Block Structure (per block):**
