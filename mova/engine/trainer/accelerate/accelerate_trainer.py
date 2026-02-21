@@ -389,7 +389,7 @@ class AccelerateTrainer:
         accumulated_video_loss = 0.0
         accumulated_audio_loss = 0.0
         log_count = 0
-        
+
         while self.global_step < self.max_steps:
             try:
                 batch = next(data_iter)
@@ -397,45 +397,45 @@ class AccelerateTrainer:
                 self.epoch += 1
                 data_iter = iter(self.train_dataloader)
                 batch = next(data_iter)
-            
+
             with self.accelerator.accumulate(self.model):
-                loss_dict = self.model(
-                    video=batch["video"],
-                    audio=batch["audio"],
-                    first_frame=batch["first_frame"],
-                    caption=batch["caption"],
-                    global_step=self.global_step,
-                    cp_mesh=self.cp_mesh
-                )
-                
+                # Build model kwargs from batch - pass all tensor/list items
+                model_kwargs = {}
+                for k, v in batch.items():
+                    model_kwargs[k] = v
+                model_kwargs["global_step"] = self.global_step
+                model_kwargs["cp_mesh"] = self.cp_mesh
+
+                loss_dict = self.model(**model_kwargs)
+
                 loss = loss_dict["loss"]
-                
+
                 self.accelerator.backward(loss)
-                
+
                 if self.gradient_clip_norm > 0:
                     if self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(
                             self.model.parameters(),
                             self.gradient_clip_norm
                         )
-                
+
                 self.optimizer.step()
                 self.lr_scheduler.step()
                 self.optimizer.zero_grad()
-            
+
             accumulated_loss += loss_dict["loss"].item()
-            accumulated_video_loss += loss_dict["video_loss"].item()
-            accumulated_audio_loss += loss_dict["audio_loss"].item()
+            accumulated_video_loss += loss_dict.get("video_loss", loss_dict["loss"]).item()
+            accumulated_audio_loss += loss_dict.get("audio_loss", loss_dict.get("struct_loss", torch.tensor(0.0))).item()
             log_count += 1
-            
+
             self.global_step += 1
-            
+
             if self.global_step % self.log_interval == 0:
                 avg_loss = accumulated_loss / log_count
                 avg_video_loss = accumulated_video_loss / log_count
                 avg_audio_loss = accumulated_audio_loss / log_count
                 lr = self.optimizer.param_groups[0]["lr"]
-                
+
                 metrics = {
                     "train/loss": avg_loss,
                     "train/video_loss": avg_video_loss,
@@ -443,16 +443,28 @@ class AccelerateTrainer:
                     "train/lr": lr,
                     "train/epoch": self.epoch,
                 }
-                
+
+                # Add DualForce-specific metrics if available
+                if "struct_loss" in loss_dict:
+                    metrics["train/struct_loss"] = loss_dict["struct_loss"].item()
+                if "flame_loss" in loss_dict:
+                    metrics["train/flame_loss"] = loss_dict["flame_loss"].item()
+                if "lip_sync_loss" in loss_dict:
+                    metrics["train/lip_sync_loss"] = loss_dict["lip_sync_loss"].item()
+                if "sigma_v_mean" in loss_dict:
+                    metrics["train/sigma_v_mean"] = loss_dict["sigma_v_mean"]
+                if "sigma_s_mean" in loss_dict:
+                    metrics["train/sigma_s_mean"] = loss_dict["sigma_s_mean"]
+
                 self.logger.log(metrics, step=self.global_step)
-                
+
                 pbar.set_postfix({
                     "loss": f"{avg_loss:.4f}",
                     "v_loss": f"{avg_video_loss:.4f}",
                     "a_loss": f"{avg_audio_loss:.4f}",
                     "lr": f"{lr:.2e}",
                 })
-                
+
                 accumulated_loss = 0.0
                 accumulated_video_loss = 0.0
                 accumulated_audio_loss = 0.0

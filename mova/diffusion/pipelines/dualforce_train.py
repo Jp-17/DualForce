@@ -128,6 +128,42 @@ class DualForceTrain(DiffusionPipeline):
         self.loss_config = DualForceLossConfig(**loss_config)
 
     # ============================================================
+    # Forward (called by AccelerateTrainer)
+    # ============================================================
+
+    def forward(self, **kwargs) -> dict:
+        """Dispatch to training_step with proper argument mapping.
+
+        The AccelerateTrainer calls model(video=..., audio=..., caption=..., ...)
+        but DualForce's dataset provides video_latents, struct_latents, etc.
+        This method bridges both conventions.
+        """
+        # Map from DualForceDataset collate_fn output
+        if "video_latents" in kwargs:
+            return self.training_step(
+                video_latents=kwargs["video_latents"],
+                struct_latents=kwargs["struct_latents"],
+                audio_features=kwargs.get("audio_features"),
+                caption=kwargs["caption"],
+                first_frame=kwargs["first_frame"],
+                flame_params=kwargs.get("flame_params"),
+                cp_mesh=kwargs.get("cp_mesh"),
+            )
+        # Map from MOVA-style batch keys (fallback compatibility)
+        elif "video" in kwargs:
+            return self.training_step(
+                video_latents=kwargs["video"],
+                struct_latents=kwargs.get("audio", torch.zeros(1)),
+                audio_features=kwargs.get("audio"),
+                caption=kwargs["caption"],
+                first_frame=kwargs["first_frame"],
+                flame_params=kwargs.get("flame_params"),
+                cp_mesh=kwargs.get("cp_mesh"),
+            )
+        else:
+            raise ValueError(f"Unexpected kwargs: {list(kwargs.keys())}")
+
+    # ============================================================
     # Text Encoding (same as MOVA)
     # ============================================================
 
@@ -611,3 +647,110 @@ class DualForceTrain(DiffusionPipeline):
                 module = getattr(self, name)
                 for param in module.parameters():
                     param.requires_grad = True
+
+
+# ============================================================
+# Factory Function (registered for DIFFUSION_PIPELINES)
+# ============================================================
+
+from mova.registry import DIFFUSION_PIPELINES
+
+
+@DIFFUSION_PIPELINES.register_module()
+def DualForceTrain_from_pretrained(
+    from_pretrained: Optional[str] = None,
+    device: str = "cpu",
+    torch_dtype: torch.dtype = torch.bfloat16,
+    use_gradient_checkpointing: bool = False,
+    use_gradient_checkpointing_offload: bool = False,
+    # Config dicts for building from scratch
+    video_dit_config: Optional[Dict] = None,
+    struct_dit_config: Optional[Dict] = None,
+    bridge_config: Optional[Dict] = None,
+    scheduler_config: Optional[Dict] = None,
+    loss_config: Optional[Dict] = None,
+    # Frozen model paths
+    vae_path: Optional[str] = None,
+    text_encoder_path: Optional[str] = None,
+):
+    """Build DualForceTrain pipeline.
+
+    Two modes:
+    1. from_pretrained is set: load a saved DualForce checkpoint
+    2. from_pretrained is None: build from scratch using config dicts
+       (requires vae_path and text_encoder_path for frozen components)
+    """
+    import os
+
+    if from_pretrained is not None:
+        # Load from saved checkpoint
+        use_fsdp = os.environ.get("ACCELERATE_USE_FSDP", "false").lower() == "true"
+
+        if use_fsdp or device == "cpu":
+            model = DualForceTrain.from_pretrained(
+                from_pretrained,
+                torch_dtype=torch_dtype,
+            )
+        else:
+            model = DualForceTrain.from_pretrained(
+                from_pretrained,
+                device_map=device,
+                torch_dtype=torch_dtype,
+                low_cpu_mem_usage=True,
+            )
+    else:
+        # Build from scratch
+        print("[DualForce] Building model from scratch...")
+
+        # Build video DiT
+        video_dit_cfg = video_dit_config or {}
+        video_dit = WanModel(**video_dit_cfg).to(torch_dtype)
+        print(f"[DualForce] Video DiT: {sum(p.numel() for p in video_dit.parameters())/1e6:.1f}M params")
+
+        # Build struct DiT
+        struct_dit_cfg = struct_dit_config or {}
+        struct_dit = WanStructModel(**struct_dit_cfg).to(torch_dtype)
+        print(f"[DualForce] Struct DiT: {sum(p.numel() for p in struct_dit.parameters())/1e6:.1f}M params")
+
+        # Build bridge
+        bridge_cfg = bridge_config or {}
+        dual_tower_bridge = DualTowerConditionalBridge(**bridge_cfg).to(torch_dtype)
+        print(f"[DualForce] Bridge: {sum(p.numel() for p in dual_tower_bridge.parameters())/1e6:.1f}M params")
+
+        # Build scheduler
+        scheduler_cfg = scheduler_config or {}
+        scheduler = DiffusionForcingScheduler(**scheduler_cfg)
+
+        # Load frozen VAE
+        if vae_path:
+            video_vae = AutoencoderKLWan.from_pretrained(
+                vae_path, torch_dtype=torch_dtype
+            )
+        else:
+            raise ValueError("vae_path is required when building from scratch")
+
+        # Load frozen text encoder + tokenizer
+        if text_encoder_path:
+            text_encoder = UMT5EncoderModel.from_pretrained(
+                text_encoder_path, torch_dtype=torch_dtype
+            )
+            tokenizer = T5TokenizerFast.from_pretrained(text_encoder_path)
+        else:
+            raise ValueError("text_encoder_path is required when building from scratch")
+
+        model = DualForceTrain(
+            video_vae=video_vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            scheduler=scheduler,
+            video_dit=video_dit,
+            struct_dit=struct_dit,
+            dual_tower_bridge=dual_tower_bridge,
+            loss_config=loss_config,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+        )
+
+    model.use_gradient_checkpointing = use_gradient_checkpointing
+    model.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
+    return model

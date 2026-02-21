@@ -72,10 +72,23 @@ bridge = dict(
 # Diffusion pipeline
 diffusion_pipeline = dict(
     type="DualForceTrain_from_pretrained",
-    from_pretrained=None,   # Train from scratch
-    boundary_ratio=None,    # No two-stage (single DiT)
+    from_pretrained=None,   # Train from scratch (set to checkpoint path to resume)
     use_gradient_checkpointing=True,
     use_gradient_checkpointing_offload=True,
+    # Component configs (used when from_pretrained=None)
+    video_dit_config=video_dit,
+    struct_dit_config=struct_dit,
+    bridge_config=bridge,
+    scheduler_config=dict(),  # DiffusionForcingScheduler defaults
+    loss_config=dict(
+        video_weight=1.0,
+        struct_weight=0.5,
+        flame_weight=0.1,
+        lip_sync_weight=0.3,
+    ),
+    # Frozen model paths (required for from-scratch training)
+    vae_path="/root/autodl-tmp/checkpoints/MOVA-360p/video_vae",
+    text_encoder_path="/root/autodl-tmp/checkpoints/MOVA-360p/text_encoder",
 )
 
 # --------------------------------------------------
